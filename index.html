@@ -19,7 +19,7 @@
       --input: #2c2c2e;
       --border: #3a3a3c;
       --accent: #0a84ff;
-      --orange: #ff9f0a;
+      --green: #30d158;
       --danger: #ff453a;
       --muted: #8e8e93;
     }
@@ -180,6 +180,31 @@
       justify-content: space-between;
     }
 
+    .sync-pill {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--green);
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .sync-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    .sync-pill.syncing {
+      color: #ffd60a;
+    }
+    .sync-pill.syncing .sync-dot {
+      background: #ffd60a;
+    }
+
     .card {
       background-color: var(--card);
       border-radius: 14px;
@@ -304,7 +329,7 @@
       bottom: calc(var(--sb) + 22px);
       left: 50%;
       transform: translateX(-50%) translateY(20px);
-      background: #30d158;
+      background: var(--green);
       color: #000;
       font-weight: 700;
       font-size: 14px;
@@ -336,47 +361,65 @@
     <div class="menu-container" id="menuContainer"></div>
   </div>
 
-  <!-- TAB 2: Edit / Add / Reorder App Clips -->
+  <!-- TAB 2: Edit / Add / Reorder App Clips (Synced Across Devices) -->
   <div class="tab-pane" id="paneEdit">
     <div class="section-label">
       <span>Aura Browser App Clips</span>
-      <span id="clipCountLabel">0 clips</span>
+      <span class="sync-pill" id="syncPill"><span class="sync-dot"></span><span id="syncText">Cloud Synced</span></span>
     </div>
     <div id="linksList"></div>
 
     <button class="btn-add" type="button" onclick="addLink()">+ Add App Clip</button>
-    <button class="btn-save" type="button" onclick="saveAndSwitch()">Save & View App Clips</button>
+    <button class="btn-save" type="button" onclick="saveAndSwitch()">Save & Sync Across Devices</button>
   </div>
 
-  <div class="toast" id="toast">Saved!</div>
+  <div class="toast" id="toast">Saved & Synced!</div>
 
   <script>
-    const STORAGE_KEY = 'aura_hub_clips_v1';
+    // Connects to your existing Render backend so changes sync across all devices automatically!
+    const BACKEND_URL = 'https://smartcalc-backend-el0f.onrender.com';
+    const STORAGE_KEY = 'aura_hub_clips_v2';
 
     const DEFAULT_CLIPS = [
-      { id: '1', title: 'Stopwatch (ACAAT)', url: 'https://' },
-      { id: '2', title: 'Calculator Force', url: 'https://' },
-      { id: '3', title: 'SmartCalc & Stopwatch Remote', url: 'https://smartcalc-backend-el0f.onrender.com/' },
-      { id: '4', title: 'iControl', url: 'https://icontrol-magic.onrender.com/' }
+      { name: 'iControl Web App', url: 'https://icontrol-magic.onrender.com/', openInSafari: false },
+      { name: 'Magic Remote Dashboard', url: 'https://smartcalc-backend-el0f.onrender.com/', openInSafari: false }
     ];
 
+    // links holds the Aura Hub clips [{ name, url, openInSafari }]
     let links = [];
+    // preservedSpecialSites keeps built-in items like "dice" intact on the backend for Stopwatch/Calculator
+    let preservedSpecialSites = [
+      { name: 'Built-in 3D Dice Roller', url: 'dice', openInSafari: false }
+    ];
 
     function normalizeUrl(raw) {
       if (!raw) return '';
       const s = raw.trim();
       if (!s) return '';
+      if (s.toLowerCase() === 'dice') return 'dice';
       if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(s)) return s;
       return 'https://' + s;
     }
 
-    function loadClips() {
+    function setSyncStatus(state, text) {
+      const pill = document.getElementById('syncPill');
+      const txt = document.getElementById('syncText');
+      if (!pill || !txt) return;
+      pill.classList.toggle('syncing', state === 'syncing');
+      txt.textContent = text;
+    }
+
+    function loadLocalCache() {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            links = parsed;
+          if (Array.isArray(parsed) && parsed.length) {
+            links = parsed.map(x => ({
+              name: x.name || x.title || 'App Clip',
+              url: x.url || 'https://',
+              openInSafari: !!x.openInSafari
+            }));
             return;
           }
         }
@@ -384,16 +427,85 @@
       links = JSON.parse(JSON.stringify(DEFAULT_CLIPS));
     }
 
-    function persistClips() {
+    function saveLocalCache() {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(links));
       } catch (e) {}
     }
 
+    // Fetch latest list from Render backend so edits on any device show up everywhere
+    async function pullFromCloud() {
+      setSyncStatus('syncing', 'Syncing...');
+      try {
+        const res = await fetch(BACKEND_URL + '/api/sites?t=' + Date.now(), { cache: 'no-store' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (data && Array.isArray(data.savedSites) && data.savedSites.length) {
+          const special = [];
+          const webClips = [];
+          data.savedSites.forEach(s => {
+            if (!s || !s.url) return;
+            if (s.url.trim().toLowerCase() === 'dice') {
+              special.push(s);
+            } else {
+              webClips.push({
+                name: s.name || s.url,
+                url: s.url,
+                openInSafari: !!s.openInSafari
+              });
+            }
+          });
+          if (special.length) preservedSpecialSites = special;
+          if (webClips.length) {
+            links = webClips;
+            saveLocalCache();
+            renderLaunchTiles();
+            if (document.getElementById('paneEdit').classList.contains('active')) {
+              renderEditor();
+            }
+          }
+        }
+        setSyncStatus('ok', 'Cloud Synced');
+      } catch (err) {
+        setSyncStatus('ok', 'Offline Cache');
+      }
+    }
+
+    // Push updated list to Render backend so all other devices receive it
+    async function pushToCloud() {
+      setSyncStatus('syncing', 'Saving to Cloud...');
+      saveLocalCache();
+      const combined = [
+        ...preservedSpecialSites,
+        ...links
+          .filter(x => x && x.url && x.url.trim() && x.url.trim() !== 'https://')
+          .map(x => ({
+            name: (x.name || x.url).trim(),
+            url: normalizeUrl(x.url),
+            openInSafari: !!x.openInSafari
+          }))
+      ];
+      try {
+        const res = await fetch(BACKEND_URL + '/api/sites', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ savedSites: combined })
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        setSyncStatus('ok', 'Cloud Synced');
+        return true;
+      } catch (err) {
+        setSyncStatus('ok', 'Saved Locally');
+        return false;
+      }
+    }
+
     function switchTab(tab) {
       if (tab === 'launch') {
-        syncInputsIfEditing();
-        persistClips();
+        if (document.getElementById('paneEdit').classList.contains('active')) {
+          syncInputs();
+          pushToCloud();
+        }
         renderLaunchTiles();
       } else {
         renderEditor();
@@ -409,7 +521,7 @@
       const container = document.getElementById('menuContainer');
       container.innerHTML = '';
 
-      const validLinks = links.filter(item => item && (item.title || item.url));
+      const validLinks = links.filter(item => item && (item.name || item.url));
       if (validLinks.length === 0) {
         container.innerHTML = `<div class="empty-state">No App Clips added yet.<br>Tap <b>Edit Clips</b> above to add your first web app.</div>`;
         return;
@@ -426,7 +538,7 @@
 
         const titleEl = document.createElement('div');
         titleEl.className = 'tile-title';
-        titleEl.textContent = item.title || 'Untitled App Clip';
+        titleEl.textContent = item.name || 'Untitled App Clip';
 
         const subEl = document.createElement('div');
         subEl.className = 'tile-sub';
@@ -459,9 +571,7 @@
     // --- TAB 2: RENDER EDITOR ---
     function renderEditor() {
       const container = document.getElementById('linksList');
-      const countLabel = document.getElementById('clipCountLabel');
       container.innerHTML = '';
-      countLabel.textContent = `${links.length} ${links.length === 1 ? 'clip' : 'clips'}`;
 
       links.forEach((item, index) => {
         const div = document.createElement('div');
@@ -480,14 +590,13 @@
           <label>Target URL (Opens in Aura Browser)</label>
           <input type="url" class="link-url" placeholder="https://..." autocapitalize="off" autocorrect="off" spellcheck="false" />
         `;
-        div.querySelector('.link-title').value = item.title || '';
+        div.querySelector('.link-title').value = item.name || '';
         div.querySelector('.link-url').value = item.url || '';
 
-        // Auto-save on input change
         div.querySelectorAll('input').forEach(inp => {
           inp.addEventListener('input', () => {
             syncInputs();
-            persistClips();
+            saveLocalCache();
           });
         });
 
@@ -499,33 +608,27 @@
       const cards = document.querySelectorAll('#linksList .card');
       cards.forEach((card, i) => {
         if (links[i]) {
-          links[i].title = card.querySelector('.link-title').value;
+          links[i].name = card.querySelector('.link-title').value;
           links[i].url = card.querySelector('.link-url').value.trim();
         }
       });
     }
 
-    function syncInputsIfEditing() {
-      if (document.getElementById('paneEdit').classList.contains('active')) {
-        syncInputs();
-      }
-    }
-
     function addLink() {
       syncInputs();
       links.push({
-        id: String(Date.now()),
-        title: 'New App Clip',
-        url: 'https://'
+        name: 'New App Clip',
+        url: 'https://',
+        openInSafari: false
       });
-      persistClips();
+      saveLocalCache();
       renderEditor();
     }
 
     function removeLink(index) {
       syncInputs();
       links.splice(index, 1);
-      persistClips();
+      pushToCloud();
       renderEditor();
     }
 
@@ -536,31 +639,44 @@
       const temp = links[index];
       links[index] = links[targetIdx];
       links[targetIdx] = temp;
-      persistClips();
+      pushToCloud();
       renderEditor();
     }
 
     function showToast(msg) {
       const t = document.getElementById('toast');
-      t.textContent = msg || 'Saved!';
+      t.textContent = msg || 'Saved & Synced!';
       t.classList.add('show');
-      setTimeout(() => t.classList.remove('show'), 1600);
+      setTimeout(() => t.classList.remove('show'), 1800);
     }
 
-    function saveAndSwitch() {
+    async function saveAndSwitch() {
       syncInputs();
       links.forEach(item => {
         if (item.url && item.url !== 'https://') {
           item.url = normalizeUrl(item.url);
         }
       });
-      persistClips();
-      showToast('Saved!');
-      switchTab('launch');
+      await pushToCloud();
+      showToast('Saved & Synced!');
+      renderLaunchTiles();
+      document.getElementById('tabLaunchBtn').classList.add('active');
+      document.getElementById('tabEditBtn').classList.remove('active');
+      document.getElementById('paneLaunch').classList.add('active');
+      document.getElementById('paneEdit').classList.remove('active');
     }
 
-    loadClips();
+    // 1. Render immediately from local cache (0ms load)
+    loadLocalCache();
     renderLaunchTiles();
+
+    // 2. Sync with Render cloud in the background & when returning to the app
+    pullFromCloud();
+    window.addEventListener('focus', () => {
+      if (!document.getElementById('paneEdit').classList.contains('active')) {
+        pullFromCloud();
+      }
+    });
   </script>
 </body>
 </html>
