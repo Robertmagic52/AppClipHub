@@ -427,8 +427,34 @@
       links = JSON.parse(JSON.stringify(DEFAULT_CLIPS));
     }
 
+    function getDeletedUrls() {
+      try {
+        const raw = localStorage.getItem('aurahub.deleted_sites');
+        if (raw) return new Set(JSON.parse(raw));
+      } catch (e) {}
+      return new Set();
+    }
+    function addDeletedUrl(u) {
+      try {
+        const set = getDeletedUrls();
+        set.add(normalizeUrl(u));
+        localStorage.setItem('aurahub.deleted_sites', JSON.stringify(Array.from(set)));
+      } catch (e) {}
+    }
+    function unmarkDeletedUrl(u) {
+      try {
+        const set = getDeletedUrls();
+        const clean = normalizeUrl(u);
+        if (set.has(clean)) {
+          set.delete(clean);
+          localStorage.setItem('aurahub.deleted_sites', JSON.stringify(Array.from(set)));
+        }
+      } catch (e) {}
+    }
+
     function saveLocalCache() {
       try {
+        links.forEach(l => { if (l && l.url) unmarkDeletedUrl(l.url); });
         localStorage.setItem(STORAGE_KEY, JSON.stringify(links));
       } catch (e) {}
     }
@@ -442,27 +468,49 @@
         const data = await res.json();
         if (data && Array.isArray(data.savedSites) && data.savedSites.length) {
           const special = [];
-          const webClips = [];
+          const remoteClips = [];
+          const deleted = getDeletedUrls();
           data.savedSites.forEach(s => {
             if (!s || !s.url) return;
-            if (s.url.trim().toLowerCase() === 'dice') {
+            const u = normalizeUrl(s.url);
+            if (!u || deleted.has(u)) return;
+            if (u === 'dice') {
               special.push(s);
             } else {
-              webClips.push({
+              remoteClips.push({
                 name: s.name || s.url,
-                url: s.url,
+                url: u,
                 openInSafari: !!s.openInSafari
               });
             }
           });
           if (special.length) preservedSpecialSites = special;
-          if (webClips.length) {
-            links = webClips;
+
+          // Smart merge: retain local additions if backend rebooted or wiped
+          const map = new Map();
+          remoteClips.forEach(c => map.set(c.url, c));
+          let hadLocalAdditions = false;
+          (links || []).forEach(local => {
+            if (!local || !local.url) return;
+            const u = normalizeUrl(local.url);
+            if (!u || u === 'https://' || deleted.has(u)) return;
+            if (!map.has(u)) {
+              map.set(u, { name: local.name || u, url: u, openInSafari: !!local.openInSafari });
+              hadLocalAdditions = true;
+            }
+          });
+
+          const merged = Array.from(map.values());
+          if (merged.length) {
+            links = merged;
             saveLocalCache();
             renderLaunchTiles();
             if (document.getElementById('paneEdit').classList.contains('active')) {
               renderEditor();
             }
+          }
+          if (hadLocalAdditions) {
+            pushToCloud();
           }
         }
         setSyncStatus('ok', 'Cloud Synced');
@@ -627,6 +675,8 @@
 
     function removeLink(index) {
       syncInputs();
+      const toDel = links[index];
+      if (toDel && toDel.url) addDeletedUrl(toDel.url);
       links.splice(index, 1);
       pushToCloud();
       renderEditor();
@@ -673,6 +723,16 @@
     // 2. Sync with Render cloud in the background & when returning to the app
     pullFromCloud();
     window.addEventListener('focus', () => {
+      if (!document.getElementById('paneEdit').classList.contains('active')) {
+        pullFromCloud();
+      }
+    });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && !document.getElementById('paneEdit').classList.contains('active')) {
+        pullFromCloud();
+      }
+    });
+    window.addEventListener('pageshow', () => {
       if (!document.getElementById('paneEdit').classList.contains('active')) {
         pullFromCloud();
       }
