@@ -378,11 +378,13 @@
   <script>
     // Connects to your existing Render backend so changes sync across all devices automatically!
     const BACKEND_URL = 'https://smartcalc-backend-el0f.onrender.com';
-    const STORAGE_KEY = 'aura_hub_clips_v2';
+    const STORAGE_KEY = 'aura_hub_clips_v3';
 
     const DEFAULT_CLIPS = [
-      { name: 'iControl Web App', url: 'https://icontrol-magic.onrender.com/', openInSafari: false },
-      { name: 'Magic Remote Dashboard', url: 'https://smartcalc-backend-el0f.onrender.com/', openInSafari: false }
+      { name: 'Stopwatch', url: 'https://stopwatchappclip.vercel.app/', openInSafari: false },
+      { name: 'Calculator', url: 'https://smartcalc-zeta.vercel.app/', openInSafari: false },
+      { name: 'iControl Web App', url: 'https://icontrol-magic.onrender.com/', openInSafari: true },
+      { name: 'SSW Target', url: 'https://ssw.im/276', openInSafari: true }
     ];
 
     // links holds the Aura Hub clips [{ name, url, openInSafari }]
@@ -564,7 +566,16 @@
       document.getElementById('paneEdit').classList.toggle('active', tab === 'edit');
     }
 
-    // --- TAB 1: RENDER LAUNCH TILES (Opens Directly in Aura Browser) ---
+    function toSafariUrl(u) {
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+      if (isIOS) {
+        if (/^https:\/\//i.test(u)) return u.replace(/^https:\/\//i, 'x-safari-https://');
+        if (/^http:\/\//i.test(u)) return u.replace(/^http:\/\//i, 'x-safari-http://');
+      }
+      return u;
+    }
+
+    // --- TAB 1: RENDER LAUNCH TILES (Opens Directly in Aura Browser or Safari) ---
     function renderLaunchTiles() {
       const container = document.getElementById('menuContainer');
       container.innerHTML = '';
@@ -590,7 +601,7 @@
 
         const subEl = document.createElement('div');
         subEl.className = 'tile-sub';
-        subEl.textContent = destUrl || 'No URL set';
+        subEl.textContent = (destUrl || 'No URL set') + (item.openInSafari ? ' • Safari Tab' : ' • App Clip');
 
         info.appendChild(titleEl);
         info.appendChild(subEl);
@@ -608,8 +619,23 @@
             switchTab('edit');
             return;
           }
-          // Open directly inside Aura Browser
-          window.location.href = destUrl;
+          if (item.openInSafari) {
+            const safUrl = toSafariUrl(destUrl);
+            if (safUrl !== destUrl) {
+              window.location.href = safUrl;
+            } else {
+              const a = document.createElement('a');
+              a.href = destUrl;
+              a.target = '_blank';
+              a.rel = 'noopener noreferrer';
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+            }
+          } else {
+            // Open directly inside Aura Browser / App Clip
+            window.location.href = destUrl;
+          }
         });
 
         container.appendChild(tile);
@@ -635,14 +661,22 @@
           </div>
           <label>App Clip Name</label>
           <input type="text" class="link-title" placeholder="e.g. Stopwatch" />
-          <label>Target URL (Opens in Aura Browser)</label>
+          <label>Target URL</label>
           <input type="url" class="link-url" placeholder="https://..." autocapitalize="off" autocorrect="off" spellcheck="false" />
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding:8px 12px;background:#141416;border-radius:10px;">
+            <label style="margin:0;font-size:13px;color:#8e8e93;cursor:pointer;" for="safariToggle_${index}">Open in Safari Tab</label>
+            <input type="checkbox" id="safariToggle_${index}" class="link-safari" style="width:20px;height:20px;accent-color:#0a84ff;" ${item.openInSafari ? 'checked' : ''}>
+          </div>
         `;
         div.querySelector('.link-title').value = item.name || '';
         div.querySelector('.link-url').value = item.url || '';
 
         div.querySelectorAll('input').forEach(inp => {
           inp.addEventListener('input', () => {
+            syncInputs();
+            saveLocalCache();
+          });
+          inp.addEventListener('change', () => {
             syncInputs();
             saveLocalCache();
           });
@@ -658,6 +692,8 @@
         if (links[i]) {
           links[i].name = card.querySelector('.link-title').value;
           links[i].url = card.querySelector('.link-url').value.trim();
+          const saf = card.querySelector('.link-safari');
+          links[i].openInSafari = saf ? saf.checked : false;
         }
       });
     }
